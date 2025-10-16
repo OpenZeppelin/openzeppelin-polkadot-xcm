@@ -1,0 +1,6 @@
+[submodule "lib/oif-contracts"]
+	path = lib/oif-contracts
+	url = https://github.com/openintentsframework/oif-contracts
+[submodule "lib/openzeppelin-contracts"]
+	path = lib/openzeppelin-contracts
+	url = https://github.com/openzeppelin/openzeppelin-contracts
