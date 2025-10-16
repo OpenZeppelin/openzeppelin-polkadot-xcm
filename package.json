@@ -1,0 +1,21 @@
+{
+  "name": "polkadot-oif",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@parity/hardhat-polkadot": "^0.2.1",
+    "hardhat-preprocessor": "^0.1.5",
+    "hardhat-tracer": "^3.4.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.4.0",
+    "uuid": "^13.0.0"
+  }
+}

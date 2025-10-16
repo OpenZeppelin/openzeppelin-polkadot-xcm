@@ -1,15 +1,59 @@
-# Sample Polkadot Hardhat Project
+# Polkadot OIF Escrow Settler
 
-This project demonstrates how to use Hardhat with Polkadot. It comes with a sample contract, a test for that contract, and a Hardhat Ignition module that deploys that contract.
+This repository contains the Polkadot implementation of the Order Intent Flow (OIF) Escrow Settler. It is a smart contract system designed to facilitate secure, cross-chain order settlement using Polkadot's Cross-Consensus Messaging (XCM) capabilities.
 
-1) Create a binary of the [`eth-rpc`](https://github.com/paritytech/polkadot-sdk/tree/master/substrate/frame/revive/rpc) and the `dev-node` and move them to the `bin` folder at the root of your project. Alternatively, update your configuration file to point to your local binary. For instructions, check [Polkadot Hardhat docs](https://docs.polkadot.com/develop/smart-contracts/dev-environments/hardhat/#test-your-contract).
+## Overview
 
-2) Try running some of the following tasks:
+The `InputSettlerXCMEscrow` contract serves as a bridge between the standardized OIF protocol and the Polkadot ecosystem. It enables users to create orders that can be settled across different parachains.
 
-```shell
+Key features include:
+-   **Cross-Chain Settlement**: Leverages XCM to execute asset transfers and settlements across Polkadot parachains.
+-   **Asset Teleportation**: Supports "teleporting" assets between chains where trusted relationships exist.
+-   **Hybrid Settlement Logic**: Automatically detects if an order requires cross-chain execution via XCM or if it should fall back to a standard local settlement.
+-   **Escrow Management**: Holds assets in escrow during the order lifecycle to ensure atomic settlement.
+
+## Prerequisites
+
+-   [Node.js](https://nodejs.org/) (v18 or later recommended)
+-   [npm](https://www.npmjs.com/) or [yarn](https://yarnpkg.com/)
+-   Git
+
+## Installation
+
+1.  **Clone the repository:**
+    ```bash
+    git clone --recurse-submodules https://github.com/your-username/polkadot-oif.git
+    cd polkadot-oif
+    ```
+    *Note: The `--recurse-submodules` flag is important as this project relies on the `oif-contracts` library.*
+
+2.  **Install dependencies:**
+    ```bash
+    npm install
+    ```
+
+## Configuration
+
+To run the local development network, you need to obtain the necessary binaries from the Polkadot SDK releases.
+
+1.  **Download Binaries**:
+    -   Download `revive-dev-node` and `eth-rpc` from the [Polkadot SDK releases](https://github.com/paritytech/polkadot-sdk/releases).
+
+2.  **Setup Binaries**:
+    -   Place both files in the `bin/` directory of this repository.
+    -   Rename `revive-dev-node` to `dev-node`.
+    -   Ensure both files are executable:
+        ```bash
+        chmod +x bin/dev-node bin/eth-rpc
+        ```
+
+
+## Usage
+
+### Compile Contracts
+
+Compile the Solidity contracts to generate artifacts:
+
+```bash
 npx hardhat compile
-npx hardhat test
-npx hardhat node
-npx hardhat node && npx hardhat ignition deploy ./ignition/modules/MyToken.ts --network localhost
 ```
-# openzeppelin-polkadot-xcm
