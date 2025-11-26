@@ -30,11 +30,6 @@ const config: HardhatUserConfig = {
             polkadot: true,
             url: `http://127.0.0.1:8545`,
         },
-        polkadotHubTestnet: {
-            polkadot: true,
-            url: "https://testnet-passet-hub-eth-rpc.polkadot.io",
-            accounts: [vars.get("PRIVATE_KEY")],
-        },
     },
     preprocess: {
         eachLine: (hre) => ({
