@@ -56,32 +56,18 @@ contract InputSettlerXCMEscrow is
         address _inkLibrary,
         address _xcmPrecompile,
         address _baseSettler
-    ) EIP712(_domainName(), _domainVersion()) Ownable(msg.sender) {
+    ) EIP712("PolkadotOIFEscrow", "1") Ownable(msg.sender) {
         inkLibrary = _inkLibrary;
         xcmPrecompile = _xcmPrecompile;
         baseSettler = _baseSettler;
     }
 
     /**
-     * @notice Returns the domain name of the EIP712 signature.
-     * @dev This function is only called in the constructor and the returned value is cached
-     * by the EIP712 base contract.
-     * @return name The domain name.
+     * @notice Opens an intent for `order.user`. Intent is always executed via the base settler.
+     * @param order StandardOrder representing the intent.
+     * @param sponsor Address to collect tokens from.
+     * @param signature Allowance signature from sponsor with supported signature type encoding.
      */
-    function _domainName() internal view virtual returns (string memory) {
-        return "PolkadotOIFEscrow";
-    }
-
-    /**
-     * @notice Returns the domain version of the EIP712 signature.
-     * @dev This function is only called in the constructor and the returned value is cached
-     * by the EIP712 base contract.
-     * @return version The domain version.
-     */
-    function _domainVersion() internal view virtual returns (string memory) {
-        return "1";
-    }
-
     function openFor(
         StandardOrder calldata order,
         address sponsor,
@@ -91,22 +77,32 @@ contract InputSettlerXCMEscrow is
         InputSettlerEscrow(baseSettler).openFor(order, sponsor, signature);
     }
 
+    /**
+     * @notice Opens an intent for `order.user`. If XCM is available, the intent is executed via XCM.
+     *         Otherwise, the intent is executed via the base settler.
+     * @param order StandardOrder representing the intent.
+     */
     function open(StandardOrder calldata order) external nonReentrant {
         if (_checkXCMAvailable(order)) {
             _validateInputChain(order.originChainId);
             _validateTimestampHasNotPassed(order.fillDeadline);
             _validateTimestampHasNotPassed(order.expires);
-            TransferAmount[] memory transferAmounts = calculateTransferAmountsFromOutputs(order);
+            TransferAmount[] memory transferAmounts = _calculateTransferAmounts(order, true);
             _collectAndApproveTokens(transferAmounts, xcmPrecompile);
             _executeXCM(order);
             _disableApprovals(transferAmounts, xcmPrecompile);
         } else {
-            TransferAmount[] memory transferAmounts = calculateTransferAmountsFromInputs(order);
+            TransferAmount[] memory transferAmounts = _calculateTransferAmounts(order, false);
             _collectAndApproveTokens(transferAmounts, baseSettler);
             InputSettlerEscrow(baseSettler).open(order);
         }
     }
 
+    /**
+     * @notice Collects tokens from the sender and approves them for the recipient.
+     * @param transferAmounts Array of TransferAmount structs containing the amount and token.
+     * @param recipient Address to collect tokens from.
+     */
     function _collectAndApproveTokens(TransferAmount[] memory transferAmounts, address recipient) private {
         uint256 numTransfers = transferAmounts.length;
         for (uint256 i = 0; i < numTransfers; ++i) {
@@ -117,7 +113,11 @@ contract InputSettlerXCMEscrow is
             SafeERC20.safeIncreaseAllowance(token, recipient, amount);
         }
     }
-
+    /**
+     * @notice Disables approvals for the tokens for the recipient after the order was processed.
+     * @param transferAmounts Array of TransferAmount structs containing the amount and token.
+     * @param recipient Address to disable approvals for.
+     */
     function _disableApprovals(TransferAmount[] memory transferAmounts, address recipient) private {
         uint256 numTransfers = transferAmounts.length;
         for (uint256 i = 0; i < numTransfers; ++i) {
@@ -127,43 +127,60 @@ contract InputSettlerXCMEscrow is
         }
     }
 
-    function calculateTransferAmountsFromOutputs(StandardOrder calldata order) private pure returns (TransferAmount[] memory) {
-        uint256 numOutputs = order.outputs.length;
-        TransferAmount[] memory transferAmounts = new TransferAmount[](numOutputs);
-        for (uint256 i = 0; i < numOutputs; ++i) {
-            MandateOutput calldata output = order.outputs[i];
-            transferAmounts[i] = TransferAmount({ amount: output.amount, token: output.token.fromIdentifier() });
+    /**
+     * @dev Returns an array of TransferAmount structs for order inputs or outputs.
+     * @param order The StandardOrder containing inputs/outputs.
+     * @param fromOutputs If true, use outputs; if false, use inputs.
+     */
+    function _calculateTransferAmounts(StandardOrder calldata order, bool fromOutputs) private pure returns (TransferAmount[] memory) {
+        uint256 length = fromOutputs ? order.outputs.length : order.inputs.length;
+        TransferAmount[] memory transferAmounts = new TransferAmount[](length);
+        for (uint256 i = 0; i < length; ++i) {
+            if (fromOutputs) {
+                MandateOutput calldata output = order.outputs[i];
+                transferAmounts[i] = TransferAmount({ amount: output.amount, token: output.token.fromIdentifier() });
+            } else {
+                uint256[2] calldata input = order.inputs[i];
+                transferAmounts[i] = TransferAmount({ amount: input[1], token: input[0].validatedCleanAddress() });
+            }
         }
         return transferAmounts;
     }
 
-    function calculateTransferAmountsFromInputs(StandardOrder calldata order) private pure returns (TransferAmount[] memory) {
-        uint256 numInputs = order.inputs.length;
-        TransferAmount[] memory transferAmounts = new TransferAmount[](numInputs);
-        for (uint256 i = 0; i < numInputs; ++i) {
-            uint256[2] calldata input = order.inputs[i];
-            transferAmounts[i] = TransferAmount({ amount: input[1], token: input[0].validatedCleanAddress() });
-        }
-        return transferAmounts;
-    }
-
+    /**
+     * @dev Checks whether XCM (Cross-Consensus Messaging) settlement is available for the given order.
+     * Validates feature flag, presence and validity of order inputs/outputs, and ensures teleport and amount constraints.
+     * @param order The StandardOrder struct containing input and output requirements.
+     * @return available True if XCM settlement is available for the order, false otherwise.
+     */
     function _checkXCMAvailable(
         StandardOrder calldata order
     ) private view returns (bool) {
-        if (!xcmEnabled) return false;
-        if (order.inputs.length == 0 || order.outputs.length == 0) {
-            return false;
-        }
-        if (!_validateOutputsForXCM(order.outputs)) return false;
-        if (!_validateInputsForXCM(order.inputs)) return false;
-        return _verifyInputsCoverOutputs(order.inputs, order.outputs);
+        return xcmEnabled 
+            && order.inputs.length > 0 
+            && order.outputs.length > 0 
+            && _validateOutputsForXCM(order.outputs) 
+            && _validateInputsForXCM(order.inputs) 
+            && _verifyInputsCoverOutputs(order.inputs, order.outputs);
     }
      
+    /**
+     * @dev Validates that all outputs are suitable for XCM (Cross-Consensus Messaging) settlement.
+     * Checks that each output has:
+     * - A non-zero recipient.
+     * - No embedded contract call or context.
+     * - A valid chainId below the XCM maximum.
+     * - The token and chain combination is approved for teleport.
+     * - The output amount does not exceed the max allowed.
+     * @param outputs Array of MandateOutput to validate.
+     * @return True if all outputs are XCM-compatible, false otherwise.
+     */
     function _validateOutputsForXCM(MandateOutput[] calldata outputs) private view returns (bool) {
         uint256 numOutputs = outputs.length;
         for (uint256 i = 0; i < numOutputs; ++i) {
             MandateOutput calldata output = outputs[i];
             if (output.recipient == bytes32(0)) return false;
+            if (output.call.length != 0 || output.context.length != 0) return false;
             uint256 destination = output.chainId;
             if (destination > MAX_XCM_CHAIN_ID) {
                 return false;
@@ -182,6 +199,11 @@ contract InputSettlerXCMEscrow is
         return true;
     }
 
+    /**
+     * @dev Validates that each XCM input does not exceed the maximum allowed amount.
+     * @param inputs Array of input token and amount pairs for XCM settlement.
+     * @return True if all input amounts are within the allowed XCM maximum, false otherwise.
+     */
     function _validateInputsForXCM(uint256[2][] calldata inputs) private pure returns (bool) {
         uint256 numInputs = inputs.length;
         for (uint256 i = 0; i < numInputs; ++i) {
@@ -194,6 +216,17 @@ contract InputSettlerXCMEscrow is
         return true;
     }
 
+    /**
+     * @dev Checks whether the provided input tokens can fully cover the required output amounts per token.
+     *
+     * For each output, aggregates the required amounts by token address.
+     * Then subtracts any provided input amounts for those tokens.
+     * Returns true if all required outputs are fully covered by the corresponding inputs, false otherwise.
+     *
+     * @param inputs Array of [token, amount] pairs representing available input tokens.
+     * @param outputs Array of MandateOutput specifying required output tokens and amounts.
+     * @return True if all outputs are covered by the inputs per token, false otherwise.
+     */
     function _verifyInputsCoverOutputs(uint256[2][] calldata inputs, MandateOutput[] calldata outputs) private pure returns (bool) {
         // Aggregation and coverage logic
         uint256 numInputs = inputs.length;
@@ -276,8 +309,10 @@ contract InputSettlerXCMEscrow is
         }
     }
 
-    
-
+    /**
+     * @notice Calls InputSettlerEscrow.finalise with the given parameters.
+     * @dev This is a passthrough to the base settler's finalise method.
+     */
     function finalise(
         StandardOrder calldata order,
         InputSettlerBase.SolveParams[] calldata solveParams,
@@ -292,6 +327,10 @@ contract InputSettlerXCMEscrow is
         );
     }
 
+    /**
+     * @notice Calls InputSettlerEscrow.finaliseWithSignature with the given parameters.
+     * @dev This is a passthrough to the base settler's finaliseWithSignature method.
+     */
     function finaliseWithSignature(
         StandardOrder calldata order,
         InputSettlerBase.SolveParams[] calldata solveParams,
@@ -308,12 +347,20 @@ contract InputSettlerXCMEscrow is
         );
     }
 
+    /**
+     * @notice Calls InputSettlerEscrow.orderIdentifier with the given parameters.
+     * @dev This is a passthrough to the base settler's orderIdentifier method.
+     */
     function orderIdentifier(
         StandardOrder memory order
     ) external view returns (bytes32) {
         return InputSettlerEscrow(baseSettler).orderIdentifier(order);
     }
 
+    /**
+     * @notice Calls InputSettlerEscrow.purchaseOrder with the given parameters.
+     * @dev This is a passthrough to the base settler's purchaseOrder method.
+     */
     function purchaseOrder(
         OrderPurchase memory orderPurchase,
         StandardOrder memory order,
@@ -332,6 +379,13 @@ contract InputSettlerXCMEscrow is
         );
     }
 
+    /**
+     * @notice Allows teleportation of a specific ERC20 token to a given destination parachain.
+     * @dev Sets the teleport permission for the (destination, token) pair to true.
+     * Only callable by the contract owner.
+     * @param destination The parachain ID to allow teleporting to.
+     * @param token The address of the ERC20 token to permit for teleportation.
+     */
     function allowTeleport(
         uint32 destination,
         address token
@@ -341,6 +395,13 @@ contract InputSettlerXCMEscrow is
         emit TeleportAllowed(destination, token);
     }
 
+    /**
+     * @notice Forbids teleportation of a specific ERC20 token to a given destination parachain.
+     * @dev Removes teleport permission for the (destination, token) pair.
+     * Only callable by the contract owner.
+     * @param destination The parachain ID to disallow teleporting to.
+     * @param token The address of the ERC20 token to forbid for teleportation.
+     */
     function forbidTeleport(
         uint32 destination,
         address token
@@ -350,11 +411,24 @@ contract InputSettlerXCMEscrow is
         emit TeleportForbidden(destination, token);
     }
 
+    /**
+     * @notice Enables or disables XCM (Cross-Consensus Messaging) functionality.
+     * @dev Only callable by the contract owner.
+     * @param enabled Boolean flag to set XCM enabled (true) or disabled (false).
+     * Emits a {XCMEnabledChanged} event.
+     */
     function setXCMEnabled(bool enabled) external onlyOwner {
         xcmEnabled = enabled;
         emit XCMEnabledChanged(enabled);
     }
 
+    /**
+     * @dev Searches for an address (`needle`) in the first `len` elements of the `haystack` array.
+     * @param needle The address to search for.
+     * @param haystack The array of addresses to search within.
+     * @param len The number of elements in `haystack` to consider during the search.
+     * @return The index of `needle` if found; otherwise, returns `len`.
+     */
     function _findInArray(
         address needle,
         address[] memory haystack,
