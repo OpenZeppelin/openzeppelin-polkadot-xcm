@@ -108,6 +108,61 @@ describe("InputSettlerXCMEscrow", function () {
         });
     });
 
+    describe("setXCMEnabled", function () {
+        it("Should fall back to baseSettler when XCM is disabled for valid XCM order", async function () {
+            const destination = 1000;
+            await inputSettlerXCMEscrow.allowTeleport(destination, await token.getAddress());
+
+            const order = createOrder();
+
+            // Verify XCM path would work normally
+            await token.connect(user).approve(await inputSettlerXCMEscrow.getAddress(), ethers.parseEther("200"));
+            await mockLibrary.setTeleportMessage("0xabcdef");
+            await mockXcm.setExecutionSuccess(true);
+
+            // Disable XCM globally
+            await inputSettlerXCMEscrow.setXCMEnabled(false);
+
+            // Should fall back to baseSettler despite valid XCM configuration
+            await expect(inputSettlerXCMEscrow.connect(user).open(order))
+                .to.emit(baseSettler, "Open");
+
+            // Verify XCM was not called
+            const xcmAllowance = await token.allowance(
+                await inputSettlerXCMEscrow.getAddress(),
+                await mockXcm.getAddress()
+            );
+            expect(xcmAllowance).to.equal(0);
+        });
+
+        it("Should resume XCM path when re-enabled", async function () {
+            const destination = 1000;
+            await inputSettlerXCMEscrow.allowTeleport(destination, await token.getAddress());
+
+            const order = createOrder();
+
+            await token.connect(user).approve(await inputSettlerXCMEscrow.getAddress(), ethers.parseEther("100"));
+            await mockLibrary.setTeleportMessage("0xabcdef");
+            await mockXcm.setExecutionSuccess(true);
+
+            // Disable then re-enable XCM
+            await inputSettlerXCMEscrow.setXCMEnabled(false);
+            await inputSettlerXCMEscrow.setXCMEnabled(true);
+
+            // Should use XCM path again
+            await expect(inputSettlerXCMEscrow.connect(user).open(order))
+                .to.emit(mockXcm, "Executed")
+                .withArgs("0xabcdef");
+        });
+
+        it("Should revert if not called by owner", async function () {
+            await expect(
+                inputSettlerXCMEscrow.connect(user).setXCMEnabled(false)
+            ).to.be.revertedWithCustomError(inputSettlerXCMEscrow, "OwnableUnauthorizedAccount")
+                .withArgs(user.address);
+        });
+    });
+
     describe("_checkXCMAvailable", function () {
         it("Should fall back to baseSettler for orders with chainId > uint32.max", async function () {
             const largeChainId = BigInt("0x100000000"); // > 2^32 - 1

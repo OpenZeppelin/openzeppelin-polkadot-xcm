@@ -13,18 +13,22 @@ import {OrderPurchase} from "oif/input/types/OrderPurchaseType.sol";
 import {LibAddress} from "oif/libs/LibAddress.sol";
 import {IXcm} from "./interfaces/IXcm.sol";
 import {ILibrary} from "./interfaces/ILibrary.sol";
+import {ReentrancyGuard} from "openzeppelin/utils/ReentrancyGuard.sol";
 
 contract InputSettlerXCMEscrow is
     InputSettlerPurchase,
     IInputSettlerEscrow,
-    Ownable
+    Ownable,
+    ReentrancyGuard
 {
     using StandardOrderType for StandardOrder;
     using LibAddress for uint256;
     using LibAddress for bytes32;
-    address inkLibrary;
-    address xcmPrecompile;
-    address baseSettler;
+    address public immutable inkLibrary;
+    address public immutable xcmPrecompile;
+    address public immutable baseSettler;
+
+    bool public xcmEnabled = true;
 
     mapping(bytes32 => bool) teleportAllowed;
 
@@ -72,17 +76,12 @@ contract InputSettlerXCMEscrow is
         StandardOrder calldata order,
         address sponsor,
         bytes calldata signature
-    ) external {
-        // TODO: try to open XCM with the checks of sigs
-        // if (_checkXCMAvailable(order)) {
-        // TODO: check signatures
-        // _executeXCM(order);
-        // } else {
+    ) external nonReentrant {
+        // TODO: right now we are not bringing the sponsored intents
         InputSettlerEscrow(baseSettler).openFor(order, sponsor, signature);
-        // }
     }
 
-    function open(StandardOrder calldata order) external {
+    function open(StandardOrder calldata order) external nonReentrant {
         if (_checkXCMAvailable(order)) {
             _validateInputChain(order.originChainId);
             _validateTimestampHasNotPassed(order.fillDeadline);
@@ -101,19 +100,10 @@ contract InputSettlerXCMEscrow is
         uint256 numTransfers = transferAmounts.length;
         for (uint256 i = 0; i < numTransfers; ++i) {
             TransferAmount memory transfer = transferAmounts[i];
-            address token = transfer.token;
             uint256 amount = transfer.amount;
-            SafeERC20.safeTransferFrom(
-                IERC20(token),
-                msg.sender,
-                address(this),
-                amount
-            );
-            SafeERC20.safeIncreaseAllowance(
-                IERC20(token),
-                recipient,
-                amount
-            );
+            IERC20 token = IERC20(transfer.token);
+            SafeERC20.safeTransferFrom(token, msg.sender, address(this), amount);
+            SafeERC20.safeIncreaseAllowance(token, recipient, amount);
         }
     }
 
@@ -140,6 +130,9 @@ contract InputSettlerXCMEscrow is
     function _checkXCMAvailable(
         StandardOrder calldata order
     ) private view returns (bool) {
+        if (!xcmEnabled) {
+            return false;
+        }
         uint256[2][] calldata inputs = order.inputs;
         uint256 numInputs = inputs.length;
         uint256 numOutputs = order.outputs.length;
@@ -290,6 +283,10 @@ contract InputSettlerXCMEscrow is
         bytes32 key = keccak256(abi.encode(destination, token));
         teleportAllowed[key] = false;
         emit TeleportForbidden(destination, token);
+    }
+
+    function setXCMEnabled(bool enabled) external onlyOwner {
+        xcmEnabled = enabled;
     }
 
     function _findInArray(
