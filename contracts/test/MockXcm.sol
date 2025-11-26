@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.26;
 
 import "../interfaces/IXcm.sol";
 
@@ -37,8 +37,6 @@ contract MockXcm is IXcm {
     function weighMessage(
         bytes calldata message
     ) external view override returns (Weight memory weight) {
-        // Note: In a real implementation, this would be view, but we emit for testing
-        // For mock purposes, we'll make it non-view to allow events
         return mockWeight;
     }
 }

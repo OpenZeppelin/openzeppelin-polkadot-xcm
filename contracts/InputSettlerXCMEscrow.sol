@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 import {InputSettlerPurchase} from "oif/input/InputSettlerPurchase.sol";
 import {InputSettlerEscrow} from "oif/input/escrow/InputSettlerEscrow.sol";
@@ -14,6 +15,7 @@ import {LibAddress} from "oif/libs/LibAddress.sol";
 import {IXcm} from "./interfaces/IXcm.sol";
 import {ILibrary} from "./interfaces/ILibrary.sol";
 import {ReentrancyGuard} from "openzeppelin/utils/ReentrancyGuard.sol";
+import {SafeCast} from "openzeppelin/utils/math/SafeCast.sol";
 
 contract InputSettlerXCMEscrow is
     InputSettlerPurchase,
@@ -23,24 +25,32 @@ contract InputSettlerXCMEscrow is
 {
     using StandardOrderType for StandardOrder;
     using LibAddress for uint256;
+    using SafeCast for uint256;
     using LibAddress for bytes32;
+
+    /// @dev XCM destination chain IDs are limited to uint32
+    uint256 private constant MAX_XCM_CHAIN_ID = type(uint32).max;
+
+    /// @dev XCM teleport amounts are limited to uint128
+    uint256 private constant MAX_XCM_AMOUNT = type(uint128).max;
+
     address public immutable inkLibrary;
     address public immutable xcmPrecompile;
     address public immutable baseSettler;
 
     bool public xcmEnabled = true;
 
-    mapping(bytes32 => bool) teleportAllowed;
+    mapping(bytes32 => bool) private teleportAllowed;
 
     struct TransferAmount {
         uint256 amount;
         address token;
     }
 
-    // InputSettlerEscrow baseSettler;
-
     event TeleportAllowed(uint32 destination, address token);
     event TeleportForbidden(uint32 destination, address token);
+    event XCMEnabledChanged(bool enabled);
+    event XCMTeleportExecuted(uint256 indexed destination, address token, uint256 amount, bytes32 recipient);
 
     constructor(
         address _inkLibrary,
@@ -89,6 +99,7 @@ contract InputSettlerXCMEscrow is
             TransferAmount[] memory transferAmounts = calculateTransferAmountsFromOutputs(order);
             _collectAndApproveTokens(transferAmounts, xcmPrecompile);
             _executeXCM(order);
+            _disableApprovals(transferAmounts, xcmPrecompile);
         } else {
             TransferAmount[] memory transferAmounts = calculateTransferAmountsFromInputs(order);
             _collectAndApproveTokens(transferAmounts, baseSettler);
@@ -107,7 +118,16 @@ contract InputSettlerXCMEscrow is
         }
     }
 
-    function calculateTransferAmountsFromOutputs(StandardOrder calldata order) private view returns (TransferAmount[] memory) {
+    function _disableApprovals(TransferAmount[] memory transferAmounts, address recipient) private {
+        uint256 numTransfers = transferAmounts.length;
+        for (uint256 i = 0; i < numTransfers; ++i) {
+            TransferAmount memory transfer = transferAmounts[i];
+            IERC20 token = IERC20(transfer.token);
+            SafeERC20.forceApprove(token, recipient, 0);
+        }
+    }
+
+    function calculateTransferAmountsFromOutputs(StandardOrder calldata order) private pure returns (TransferAmount[] memory) {
         uint256 numOutputs = order.outputs.length;
         TransferAmount[] memory transferAmounts = new TransferAmount[](numOutputs);
         for (uint256 i = 0; i < numOutputs; ++i) {
@@ -117,7 +137,7 @@ contract InputSettlerXCMEscrow is
         return transferAmounts;
     }
 
-    function calculateTransferAmountsFromInputs(StandardOrder calldata order) private view returns (TransferAmount[] memory) {
+    function calculateTransferAmountsFromInputs(StandardOrder calldata order) private pure returns (TransferAmount[] memory) {
         uint256 numInputs = order.inputs.length;
         TransferAmount[] memory transferAmounts = new TransferAmount[](numInputs);
         for (uint256 i = 0; i < numInputs; ++i) {
@@ -130,23 +150,22 @@ contract InputSettlerXCMEscrow is
     function _checkXCMAvailable(
         StandardOrder calldata order
     ) private view returns (bool) {
-        if (!xcmEnabled) {
+        if (!xcmEnabled) return false;
+        if (order.inputs.length == 0 || order.outputs.length == 0) {
             return false;
         }
-        uint256[2][] calldata inputs = order.inputs;
-        uint256 numInputs = inputs.length;
-        uint256 numOutputs = order.outputs.length;
-
-        // We track required output amounts per token
-        uint256[] memory tempOutputAmounts = new uint256[](numOutputs);
-        address[] memory tempKeys = new address[](numOutputs);
-        uint256 emptyIdx = 0;
-        
-        // 1. Aggregate required outputs
+        if (!_validateOutputsForXCM(order.outputs)) return false;
+        if (!_validateInputsForXCM(order.inputs)) return false;
+        return _verifyInputsCoverOutputs(order.inputs, order.outputs);
+    }
+     
+    function _validateOutputsForXCM(MandateOutput[] calldata outputs) private view returns (bool) {
+        uint256 numOutputs = outputs.length;
         for (uint256 i = 0; i < numOutputs; ++i) {
-            MandateOutput calldata output = order.outputs[i];
+            MandateOutput calldata output = outputs[i];
+            if (output.recipient == bytes32(0)) return false;
             uint256 destination = output.chainId;
-            if (destination > type(uint32).max) {
+            if (destination > MAX_XCM_CHAIN_ID) {
                 return false;
             }
             uint32 destCasted = uint32(destination);
@@ -156,15 +175,48 @@ contract InputSettlerXCMEscrow is
                 return false;
             }
             uint256 amount = output.amount;
-            if (amount > type(uint128).max) {
+            if (amount > MAX_XCM_AMOUNT) {
                 return false;
             }
+        }
+        return true;
+    }
+
+    function _validateInputsForXCM(uint256[2][] calldata inputs) private pure returns (bool) {
+        uint256 numInputs = inputs.length;
+        for (uint256 i = 0; i < numInputs; ++i) {
+            uint256[2] calldata input = inputs[i];
+            uint256 amount = input[1];
+            if (amount > MAX_XCM_AMOUNT) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function _verifyInputsCoverOutputs(uint256[2][] calldata inputs, MandateOutput[] calldata outputs) private pure returns (bool) {
+        // Aggregation and coverage logic
+        uint256 numInputs = inputs.length;
+        uint256 numOutputs = outputs.length;
+
+        // We track required output amounts per token
+        uint256[] memory tempOutputAmounts = new uint256[](numOutputs);
+        address[] memory tempKeys = new address[](numOutputs);
+        uint256 emptyIdx = 0;
+
+        // 1. Aggregate required outputs
+        for (uint256 i = 0; i < numOutputs; ++i) {
+            MandateOutput calldata output = outputs[i];
+            uint256 amount = output.amount;
+            address token = output.token.fromIdentifier();
             uint256 idx = _findInArray(token, tempKeys, emptyIdx);
             if (idx == emptyIdx) {
                 emptyIdx++;
                 tempKeys[idx] = token;
             }
-            tempOutputAmounts[idx] += amount;
+            uint256 newAmount = tempOutputAmounts[idx] + amount;
+            require(newAmount >= tempOutputAmounts[idx], "Output amount overflow");
+            tempOutputAmounts[idx] = newAmount;
         }
 
         // 2. Subtract available inputs
@@ -172,10 +224,7 @@ contract InputSettlerXCMEscrow is
             uint256[2] calldata input = inputs[i];
             address token = input[0].validatedCleanAddress();
             uint256 amount = input[1];
-            if (amount > type(uint128).max) return false;
             uint256 idx = _findInArray(token, tempKeys, emptyIdx);
-            
-            // If input token corresponds to a required output token
             if (idx != emptyIdx) {
                 if (amount >= tempOutputAmounts[idx]) {
                     tempOutputAmounts[idx] = 0;
@@ -191,34 +240,50 @@ contract InputSettlerXCMEscrow is
                 return false;
             }
         }
-        
         return true;
     }
 
+    /// @notice Executes XCM teleport for each output
+    /// @dev IMPORTANT: If execution fails partway through the loop, the entire
+    /// transaction reverts. However, any XCM messages already dispatched may have
+    /// irrevocable off-chain effects depending on precompile implementation.
+    /// That's why it is important for administrators to carefully consider 
+    /// the chains where teleport is allowed.
+    /// @param order The standard order to execute XCM teleport for
     function _executeXCM(StandardOrder calldata order) private {
         uint256 numOutputs = order.outputs.length;
+        bytes[] memory messages = new bytes[](numOutputs);
         for (uint256 i = 0; i < numOutputs; ++i) {
             MandateOutput calldata output = order.outputs[i];
-            uint32 destination = uint32(output.chainId);
-            uint128 amount = uint128(output.amount);
+            uint32 destination = output.chainId.toUint32();
+            uint128 amount = output.amount.toUint128();
             bytes memory message = ILibrary(inkLibrary).teleport(
                 destination,
                 output.recipient,
                 amount
             );
 
+            messages[i] = message;
+        }
+
+        for (uint256 i = 0; i < numOutputs; ++i) {
+            bytes memory message = messages[i];
             IXcm xcm = IXcm(xcmPrecompile);
             IXcm.Weight memory weight = xcm.weighMessage(message);
             xcm.execute(message, weight);
+            MandateOutput calldata output = order.outputs[i];
+            emit XCMTeleportExecuted(output.chainId, output.token.fromIdentifier(), output.amount, output.recipient);
         }
     }
+
+    
 
     function finalise(
         StandardOrder calldata order,
         InputSettlerBase.SolveParams[] calldata solveParams,
         bytes32 destination,
         bytes calldata call
-    ) external {
+    ) external nonReentrant {
         InputSettlerEscrow(baseSettler).finalise(
             order,
             solveParams,
@@ -233,7 +298,7 @@ contract InputSettlerXCMEscrow is
         bytes32 destination,
         bytes calldata call,
         bytes calldata orderOwnerSignature
-    ) external {
+    ) external nonReentrant {
         InputSettlerEscrow(baseSettler).finaliseWithSignature(
             order,
             solveParams,
@@ -256,7 +321,7 @@ contract InputSettlerXCMEscrow is
         bytes32 purchaser,
         uint256 expiryTimestamp,
         bytes memory solverSignature
-    ) external {
+    ) external nonReentrant {
         InputSettlerEscrow(baseSettler).purchaseOrder(
             orderPurchase,
             order,
@@ -287,6 +352,7 @@ contract InputSettlerXCMEscrow is
 
     function setXCMEnabled(bool enabled) external onlyOwner {
         xcmEnabled = enabled;
+        emit XCMEnabledChanged(enabled);
     }
 
     function _findInArray(
