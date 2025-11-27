@@ -95,18 +95,12 @@ contract InputSettlerXCMEscrow is
             _validateInputChain(order.originChainId);
             _validateTimestampHasNotPassed(order.fillDeadline);
             _validateTimestampHasNotPassed(order.expires);
-            TransferAmount[] memory transferAmounts = _calculateTransferAmounts(
-                order,
-                true
-            );
+            TransferAmount[] memory transferAmounts = _transferAmountsFromOutputs(order.outputs);
             _collectAndApproveTokens(transferAmounts, xcmPrecompile);
             _executeXCM(order);
             _disableApprovals(transferAmounts, xcmPrecompile);
         } else {
-            TransferAmount[] memory transferAmounts = _calculateTransferAmounts(
-                order,
-                false
-            );
+            TransferAmount[] memory transferAmounts = _transferAmountsFromInputs(order.inputs);
             _collectAndApproveTokens(transferAmounts, baseSettler);
             InputSettlerEscrow(baseSettler).open(order);
         }
@@ -154,32 +148,37 @@ contract InputSettlerXCMEscrow is
     }
 
     /**
-     * @dev Returns an array of TransferAmount structs for order inputs or outputs.
-     * @param order The StandardOrder containing inputs/outputs.
-     * @param fromOutputs If true, use outputs; if false, use inputs.
+     * @dev Returns an array of TransferAmount structs from order outputs.
+     * @param outputs The MandateOutput array to extract transfer amounts from.
      */
-    function _calculateTransferAmounts(
-        StandardOrder calldata order,
-        bool fromOutputs
+    function _transferAmountsFromOutputs(
+        MandateOutput[] calldata outputs
     ) private pure returns (TransferAmount[] memory) {
-        uint256 length = fromOutputs
-            ? order.outputs.length
-            : order.inputs.length;
+        uint256 length = outputs.length;
         TransferAmount[] memory transferAmounts = new TransferAmount[](length);
         for (uint256 i = 0; i < length; ++i) {
-            if (fromOutputs) {
-                MandateOutput calldata output = order.outputs[i];
-                transferAmounts[i] = TransferAmount({
-                    amount: output.amount,
-                    token: output.token.fromIdentifier()
-                });
-            } else {
-                uint256[2] calldata input = order.inputs[i];
-                transferAmounts[i] = TransferAmount({
-                    amount: input[1],
-                    token: input[0].validatedCleanAddress()
-                });
-            }
+            transferAmounts[i] = TransferAmount({
+                amount: outputs[i].amount,
+                token: outputs[i].token.fromIdentifier()
+            });
+        }
+        return transferAmounts;
+    }
+
+    /**
+     * @dev Returns an array of TransferAmount structs from order inputs.
+     * @param inputs The input array of [token, amount] pairs.
+     */
+    function _transferAmountsFromInputs(
+        uint256[2][] calldata inputs
+    ) private pure returns (TransferAmount[] memory) {
+        uint256 length = inputs.length;
+        TransferAmount[] memory transferAmounts = new TransferAmount[](length);
+        for (uint256 i = 0; i < length; ++i) {
+            transferAmounts[i] = TransferAmount({
+                amount: inputs[i][1],
+                token: inputs[i][0].validatedCleanAddress()
+            });
         }
         return transferAmounts;
     }
@@ -219,23 +218,17 @@ contract InputSettlerXCMEscrow is
         uint256 numOutputs = outputs.length;
         for (uint256 i = 0; i < numOutputs; ++i) {
             MandateOutput calldata output = outputs[i];
-            if (output.recipient == bytes32(0)) return false;
-            if (output.call.length != 0 || output.context.length != 0)
-                return false;
+            if (output.recipient == bytes32(0) || output.call.length != 0 || output.context.length != 0) return false;
+            
             uint256 destination = output.chainId;
-            if (destination > MAX_XCM_CHAIN_ID) {
-                return false;
-            }
-            uint32 destCasted = uint32(destination);
+            if (destination > MAX_XCM_CHAIN_ID) return false;
+
             address token = output.token.fromIdentifier();
-            bytes32 destKey = keccak256(abi.encode(destCasted, token));
-            if (!teleportAllowed[destKey]) {
-                return false;
-            }
+            bytes32 destKey = keccak256(abi.encode(uint32(destination), token));
+            if (!teleportAllowed[destKey]) return false;
+
             uint256 amount = output.amount;
-            if (amount > MAX_XCM_AMOUNT) {
-                return false;
-            }
+            if (amount > MAX_XCM_AMOUNT) return false;
         }
         return true;
     }
@@ -488,8 +481,8 @@ contract InputSettlerXCMEscrow is
         uint256 len
     ) private pure returns (uint256) {
         require(
-            haystack.length >= len,
-            "Array length must be greater than or equal to len"
+            len <= haystack.length,
+            "Array length must be greater than len"
         );
         for (uint256 i = 0; i < len; i++) {
             if (needle == haystack[i]) {
