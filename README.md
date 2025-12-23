@@ -78,7 +78,7 @@ The deployment module accepts the following parameters to configure the first tw
 
 -   `xcmPrecompile`: The address of the XCM precompile contract (default: `0x00000000000000000000000000000000000A0000`).
 -   `inkLibrary`: The address of the Ink! library helper contract (default: `0x0000000000000000000000000000000000000000`).
-    -   The implementation of this library can be found in the [xcm-in-smart-contracts-workshop](https://github.com/franciscoaguirre/xcm-in-smart-contracts-workshop/) repository (specifically the `ink_library` directory). This library is responsible for constructing XCM messages (e.g., for teleporting assets) and must be deployed to the PolkaVM environment on the target chain.
+  -   The implementation of this library can be found in the [xcm-in-smart-contracts-workshop](https://github.com/franciscoaguirre/xcm-in-smart-contracts-workshop/) repository (specifically the `ink_library` directory). This library is responsible for constructing XCM messages (e.g., for teleporting assets) and must be deployed to the PolkaVM environment on the target chain.
 
 ### Deploying to Local Node
 
