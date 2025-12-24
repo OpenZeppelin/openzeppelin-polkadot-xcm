@@ -1,5 +1,10 @@
 # Polkadot OIF Escrow Settler
 
+> [!Warning]
+> This is experimental software and is provided on an "as is" and "as available"
+> basis. We do not give any warranties and will not be liable for any losses
+> incurred through any use of this code base.
+
 This repository contains the Polkadot implementation of the Order Intent Flow (OIF) Escrow Settler. It is a smart contract system designed to facilitate secure, cross-chain order settlement using Polkadot's Cross-Consensus Messaging (XCM) capabilities.
 
 ## Overview
@@ -47,7 +52,6 @@ To run the local development network, you need to obtain the necessary binaries 
         chmod +x bin/dev-node bin/eth-rpc
         ```
 
-
 ## Usage
 
 ### Compile Contracts
@@ -57,3 +61,59 @@ Compile the Solidity contracts to generate artifacts:
 ```bash
 npx hardhat compile
 ```
+
+## Deployment
+
+This project uses [Hardhat Ignition](https://hardhat.org/ignition) for deployment.
+
+### Contract Architecture
+
+The core contract `InputSettlerXCMEscrow` requires three dependencies to be initialized in its constructor:
+1.  **`inkLibrary`**: Helper library for constructing XCM messages (deployed in PolkaVM).
+2.  **`xcmPrecompile`**: Address of the chain's XCM precompile.
+3.  **`baseSettler`**: An instance of the standard `InputSettlerEscrow` contract, which handles non-cross-chain logic.
+
+The main deployment module is located at `ignition/modules/InputSettlerXCMEscrow.ts`. This module orchestrates the deployment by:
+1.  Deploying a new instance of `InputSettlerEscrow` (Base Settler).
+2.  Deploying `InputSettlerXCMEscrow` (XCM Settler), passing the newly deployed Base Settler address as the third constructor argument.
+
+### Parameters
+
+The deployment module accepts the following parameters to configure the first two dependencies:
+
+-   `xcmPrecompile`: The address of the XCM precompile contract (default: `0x00000000000000000000000000000000000A0000`).
+-   `inkLibrary`: The address of the Ink! library helper contract (default: `0x0000000000000000000000000000000000000000`).
+  -   The implementation of this library can be found in the [xcm-in-smart-contracts-workshop](https://github.com/franciscoaguirre/xcm-in-smart-contracts-workshop/) repository (specifically the `ink_library` directory). This library is responsible for constructing XCM messages (e.g., for teleporting assets) and must be deployed to the PolkaVM environment on the target chain.
+
+### Deploying to Local Node
+
+To deploy to the local development node, you must provide valid addresses for `inkLibrary` and `xcmPrecompile`. If you don't have these on your local node, you may need to deploy mocks first.
+
+1.  Ensure the local node is running (using the binary setup in **Configuration**).
+2.  Run the deployment command with parameters:
+
+    ```bash
+    npx hardhat ignition deploy ignition/modules/InputSettlerXCMEscrow.ts --network localNode --parameters '{"InputSettlerXCMEscrowModule": {"inkLibrary": "0xYourInkLibraryAddress", "xcmPrecompile": "0xYourXcmPrecompileAddress"}}'
+    ```
+
+    *Note: The default `inkLibrary` address is `0x00...00`, which will cause the deployment to revert if not overridden.*
+
+### Deploying to a Live Network
+
+To deploy to a live network (e.g., a parachain testnet or mainnet), you should provide the specific addresses for the XCM precompile and Ink library if they differ from the defaults.
+
+```bash
+npx hardhat ignition deploy ignition/modules/InputSettlerXCMEscrow.ts --network <network_name> --parameters '{"InputSettlerXCMEscrowModule": {"xcmPrecompile": "0xYourXcmPrecompileAddress", "inkLibrary": "0xYourInkLibraryAddress"}}'
+```
+
+## Security
+
+> [!Warning]
+> This library has not been audited yet. Use at your own risk.
+
+For security concerns, please refer to our [Security Policy](./SECURITY.md).
+
+Smart contracts are an evolving technology and carry a high level of technical
+risk and uncertainty. Although OpenZeppelin is well known for its security
+audits, using OpenZeppelin Polkadot XCM is not a substitute for a security
+audit.
