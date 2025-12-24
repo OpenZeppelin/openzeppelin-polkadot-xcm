@@ -105,3 +105,15 @@ To deploy to a live network (e.g., a parachain testnet or mainnet), you should p
 ```bash
 npx hardhat ignition deploy ignition/modules/InputSettlerXCMEscrow.ts --network <network_name> --parameters '{"InputSettlerXCMEscrowModule": {"xcmPrecompile": "0xYourXcmPrecompileAddress", "inkLibrary": "0xYourInkLibraryAddress"}}'
 ```
+
+## Security
+
+> [!Warning]
+> This library has not been audited yet. Use at your own risk.
+
+For security concerns, please refer to our [Security Policy](./SECURITY.md).
+
+Smart contracts are an evolving technology and carry a high level of technical
+risk and uncertainty. Although OpenZeppelin is well known for its security
+audits, using OpenZeppelin Polkadot XCM is not a substitute for a security
+audit.
