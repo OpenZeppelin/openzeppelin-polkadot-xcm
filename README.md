@@ -1,5 +1,10 @@
 # Polkadot OIF Escrow Settler
 
+> [!Warning]
+> This is experimental software and is provided on an "as is" and "as available"
+> basis. We do not give any warranties and will not be liable for any losses
+> incurred through any use of this code base.
+
 This repository contains the Polkadot implementation of the Order Intent Flow (OIF) Escrow Settler. It is a smart contract system designed to facilitate secure, cross-chain order settlement using Polkadot's Cross-Consensus Messaging (XCM) capabilities.
 
 ## Overview
